@@ -26,7 +26,7 @@ SMAC_2c64zg_masac_default_config = dict(
     ),
     policy=dict(
         cuda=True,
-        on_policy=False,
+        multi_agent=True,
         random_collect_size=0,
         model=dict(
             agent_obs_shape=404,
@@ -80,7 +80,7 @@ SMAC_2c64zg_masac_default_create_config = dict(
         import_names=['dizoo.smac.envs.smac_env'],
     ),
     env_manager=dict(type='base'),
-    policy=dict(type='sac_discrete', ),
+    policy=dict(type='discrete_sac', ),
 )
 SMAC_2c64zg_masac_default_create_config = EasyDict(SMAC_2c64zg_masac_default_create_config)
 create_config = SMAC_2c64zg_masac_default_create_config

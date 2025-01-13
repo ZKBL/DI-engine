@@ -54,7 +54,10 @@ class PriorityExperienceReplay:
 
     def push(self, chain: Callable, data: Any, meta: Optional[dict] = None, *args, **kwargs) -> BufferedData:
         if meta is None:
-            meta = {'priority': self.max_priority}
+            if 'priority' in data:
+                meta = {'priority': data.pop('priority')}
+            else:
+                meta = {'priority': self.max_priority}
         else:
             if 'priority' not in meta:
                 meta['priority'] = self.max_priority
@@ -105,12 +108,12 @@ class PriorityExperienceReplay:
             self.max_priority = max(self.max_priority, new_priority)
 
     def delete(self, chain: Callable, index: str, *args, **kwargs) -> None:
-        for item in self.buffer.storage:
-            meta = item.meta
-            priority_idx = meta['priority_idx']
-            self.sum_tree[priority_idx] = self.sum_tree.neutral_element
-            self.min_tree[priority_idx] = self.min_tree.neutral_element
-            self.buffer_idx.pop(priority_idx)
+        item = self.buffer.get_by_index(index)
+        meta = item.meta
+        priority_idx = meta['priority_idx']
+        self.sum_tree[priority_idx] = self.sum_tree.neutral_element
+        self.min_tree[priority_idx] = self.min_tree.neutral_element
+        self.buffer_idx.pop(priority_idx)
         return chain(index, *args, **kwargs)
 
     def clear(self, chain: Callable) -> None:

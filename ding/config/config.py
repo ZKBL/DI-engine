@@ -13,7 +13,7 @@ from typing import Optional, Tuple
 from easydict import EasyDict
 from copy import deepcopy
 
-from ding.utils import deep_merge_dicts
+from ding.utils import deep_merge_dicts, get_rank
 from ding.envs import get_env_cls, get_env_manager_cls, BaseEnvManager
 from ding.policy import get_policy_cls
 from ding.worker import BaseLearner, InteractionSerialEvaluator, BaseSerialCommander, Coordinator, \
@@ -180,7 +180,7 @@ def read_config_directly(path: str) -> dict:
 def read_config(path: str) -> Tuple[dict, dict]:
     """
     Overview:
-        Read configuration from a file path(now only suport python file). And select some proper parts.
+        Read configuration from a file path(now only support python file). And select some proper parts.
     Arguments:
         - path (:obj:`str`): Path of configuration file
     Returns:
@@ -200,7 +200,7 @@ def read_config(path: str) -> Tuple[dict, dict]:
 def read_config_with_system(path: str) -> Tuple[dict, dict, dict]:
     """
     Overview:
-        Read configuration from a file path(now only suport python file). And select some proper parts
+        Read configuration from a file path(now only support python file). And select some proper parts
     Arguments:
         - path (:obj:`str`): Path of configuration file
     Returns:
@@ -452,6 +452,8 @@ def compile_config(
     if len(world_model_config) > 0:
         default_config['world_model'] = world_model_config
     cfg = deep_merge_dicts(default_config, cfg)
+    if 'unroll_len' in cfg.policy:
+        cfg.policy.collect.unroll_len = cfg.policy.unroll_len
     cfg.seed = seed
     # check important key in config
     if evaluator in [InteractionSerialEvaluator, BattleInteractionSerialEvaluator]:  # env interaction evaluation
@@ -459,7 +461,7 @@ def compile_config(
         cfg.policy.eval.evaluator.n_episode = cfg.env.n_evaluator_episode
     if 'exp_name' not in cfg:
         cfg.exp_name = 'default_experiment'
-    if save_cfg:
+    if save_cfg and get_rank() == 0:
         if os.path.exists(cfg.exp_name) and renew_dir:
             cfg.exp_name += datetime.datetime.now().strftime("_%y%m%d_%H%M%S")
         try:
