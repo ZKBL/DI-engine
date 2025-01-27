@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import pytest
 
-from ding.model import ConvEncoder, FCEncoder, IMPALAConvEncoder
+from ding.model import ConvEncoder, FCEncoder, IMPALAConvEncoder, GaussianFourierProjectionTimeEncoder
 from ding.torch_utils import is_differentiable
 
 B = 4
@@ -19,6 +19,20 @@ class TestEncoder:
     def test_conv_encoder(self):
         inputs = torch.randn(B, C, H, W)
         model = ConvEncoder((C, H, W), hidden_size_list=[32, 48, 64, 64, 128], activation=torch.nn.Tanh())
+        print(model)
+        outputs = model(inputs)
+        self.output_check(model, outputs)
+        assert outputs.shape == (B, 128)
+
+    def test_dreamer_conv_encoder(self):
+        inputs = torch.randn(B, C, H, W)
+        model = ConvEncoder(
+            (C, H, W),
+            hidden_size_list=[32, 64, 128, 256, 128],
+            activation=torch.nn.SiLU(),
+            kernel_size=[4, 4, 4, 4],
+            layer_norm=True
+        )
         print(model)
         outputs = model(inputs)
         self.output_check(model, outputs)
@@ -47,3 +61,10 @@ class TestEncoder:
         outputs = model(inputs)
         self.output_check(model, outputs)
         assert outputs.shape == (B, 256)
+
+    def test_GaussianFourierProjectionTimeEncoder(self):
+        inputs = torch.randn(B)
+        model = GaussianFourierProjectionTimeEncoder(128)
+        print(model)
+        outputs = model(inputs)
+        assert outputs.shape == (B, 128)

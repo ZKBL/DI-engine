@@ -1,5 +1,5 @@
 import copy
-import sys
+import torch
 from collections import namedtuple
 from typing import List, Dict, Any, Tuple, Union, Optional
 
@@ -10,9 +10,6 @@ from ding.torch_utils import Adam, to_device
 from ding.utils import POLICY_REGISTRY
 from ding.utils.data import timestep_collate, default_collate, default_decollate
 from .base_policy import Policy
-import torch
-
-from ding.model.common.head import *
 
 
 @POLICY_REGISTRY.register('r2d2_gtrxl')
@@ -58,11 +55,9 @@ class R2D2GTrXLPolicy(Policy):
            | ``done``                                   | calculation.                           | fake termination env
         15 ``collect.n_sample`` int      [8, 128]       | The number of training samples of a    | It varies from
                                                         | call of collector.                     | different envs
-        16 | ``collect.unroll`` int      25             | unroll length of an iteration          | unroll_len>1
+        16 | ``collect.seq``    int      20             | Training sequence length               | unroll_len>=seq_len>1
            | ``_len``
-        17 | ``collect.seq``    int      20             | Training sequence length               | unroll_len>=seq_len>1
-           | ``_len``
-        18 | ``learn.init_``    str      zero           | 'zero' or 'old', how to initialize the |
+        17 | ``learn.init_``    str      zero           | 'zero' or 'old', how to initialize the |
            | ``memory``                                 | memory before each training iteration. |
         == ==================== ======== ============== ======================================== =======================
     """
@@ -84,7 +79,7 @@ class R2D2GTrXLPolicy(Policy):
         discount_factor=0.99,
         # (int) N-step reward for target q_value estimation
         nstep=5,
-        # how many steps to use as burnin
+        # (int) How many steps to use in burnin phase
         burnin_step=1,
         # (int) trajectory length
         unroll_len=25,
@@ -130,7 +125,7 @@ class R2D2GTrXLPolicy(Policy):
     )
 
     def default_model(self) -> Tuple[str, List[str]]:
-        return 'gtrxl_discrete', ['ding.model.template.q_learning']
+        return 'gtrxldqn', ['ding.model.template.q_learning']
 
     def _init_learn(self) -> None:
         """
@@ -161,7 +156,7 @@ class R2D2GTrXLPolicy(Policy):
         self._seq_len = self._cfg.seq_len
         self._value_rescale = self._cfg.learn.value_rescale
         self._init_memory = self._cfg.learn.init_memory
-        assert self._init_memory in ['zero', 'old']
+        assert self._init_memory in ['zero', 'old'], self._init_memory
 
         self._target_model = copy.deepcopy(self._model)
 
@@ -355,7 +350,6 @@ class R2D2GTrXLPolicy(Policy):
             Collect mode init method. Called by ``self.__init__``.
             Init unroll length and sequence len, collect model.
         """
-        assert 'unroll_len' not in self._cfg.collect, "Use default unroll_len"
         self._nstep = self._cfg.nstep
         self._gamma = self._cfg.discount_factor
         self._unroll_len = self._cfg.unroll_len

@@ -2,10 +2,13 @@ import os
 from typing import TYPE_CHECKING, Callable, List, Union, Tuple, Dict, Optional
 from easydict import EasyDict
 from ditk import logging
+import numpy as np
 import torch
+import tqdm
 from ding.data import Buffer, Dataset, DataLoader, offline_data_save_type
 from ding.data.buffer.middleware import PriorityExperienceReplay
 from ding.framework import task
+from ding.utils import get_rank
 
 if TYPE_CHECKING:
     from ding.framework import OnlineRLContext, OfflineRLContext
@@ -180,7 +183,55 @@ def offpolicy_data_fetcher(
     return _fetch
 
 
-def offline_data_fetcher(cfg: EasyDict, dataset: Dataset) -> Callable:
+def offline_data_fetcher_from_mem(cfg: EasyDict, dataset: Dataset) -> Callable:
+
+    from threading import Thread
+    from queue import Queue
+    import time
+    stream = torch.cuda.Stream()
+
+    def producer(queue, dataset, batch_size, device):
+        torch.set_num_threads(4)
+        nonlocal stream
+        idx_iter = iter(range(len(dataset) - batch_size))
+
+        if len(dataset) < batch_size:
+            logging.warning('batch_size is too large!!!!')
+        with torch.cuda.stream(stream):
+            while True:
+                if queue.full():
+                    time.sleep(0.1)
+                else:
+                    try:
+                        start_idx = next(idx_iter)
+                    except StopIteration:
+                        del idx_iter
+                        idx_iter = iter(range(len(dataset) - batch_size))
+                        start_idx = next(idx_iter)
+                    data = [dataset.__getitem__(idx) for idx in range(start_idx, start_idx + batch_size)]
+                    data = [[i[j] for i in data] for j in range(len(data[0]))]
+                    data = [torch.stack(x).to(device) for x in data]
+                    queue.put(data)
+
+    queue = Queue(maxsize=50)
+    device = 'cuda:{}'.format(get_rank() % torch.cuda.device_count()) if cfg.policy.cuda else 'cpu'
+    producer_thread = Thread(
+        target=producer, args=(queue, dataset, cfg.policy.learn.batch_size, device), name='cuda_fetcher_producer'
+    )
+
+    def _fetch(ctx: "OfflineRLContext"):
+        nonlocal queue, producer_thread
+        if not producer_thread.is_alive():
+            time.sleep(5)
+            producer_thread.start()
+        while queue.empty():
+            time.sleep(0.001)
+        ctx.train_data = queue.get()
+
+    return _fetch
+
+
+def offline_data_fetcher(cfg: EasyDict, dataset: Dataset, collate_fn=lambda x: x) -> Callable:
     """
     Overview:
         The outer function transforms a Pytorch `Dataset` to `DataLoader`. \
@@ -192,7 +243,8 @@ def offline_data_fetcher(cfg: EasyDict, dataset: Dataset) -> Callable:
         - dataset (:obj:`Dataset`): The dataset of type `torch.utils.data.Dataset` which stores the data.
     """
     # collate_fn is executed in policy now
-    dataloader = DataLoader(dataset, batch_size=cfg.policy.learn.batch_size, shuffle=True, collate_fn=lambda x: x)
+    dataloader = DataLoader(dataset, batch_size=cfg.policy.learn.batch_size, shuffle=True, collate_fn=collate_fn)
+    dataloader = iter(dataloader)
 
     def _fetch(ctx: "OfflineRLContext"):
         """
@@ -204,12 +256,19 @@ def offline_data_fetcher(cfg: EasyDict, dataset: Dataset) -> Callable:
         Output of ctx:
             - train_data (:obj:`List[Tensor]`): The fetched data batch.
         """
-        while True:
-            for i, data in enumerate(dataloader):
-                ctx.train_data = data
-                yield
+        nonlocal dataloader
+        try:
+            ctx.train_data = next(dataloader)  # noqa
+        except StopIteration:
             ctx.train_epoch += 1
+            del dataloader
+            dataloader = DataLoader(
+                dataset, batch_size=cfg.policy.learn.batch_size, shuffle=True, collate_fn=collate_fn
+            )
+            dataloader = iter(dataloader)
+            ctx.train_data = next(dataloader)
         # TODO apply data update (e.g. priority) in offline setting when necessary
+        ctx.trained_env_step += len(ctx.train_data)
 
     return _fetch
 
@@ -262,3 +321,125 @@ def sqil_data_pusher(cfg: EasyDict, buffer_: Buffer, expert: bool) -> Callable:
         ctx.trajectories = None
 
     return _pusher
+
+
+def qgpo_support_data_generator(cfg, dataset, policy) -> Callable:
+
+    behavior_policy_stop_training_iter = cfg.policy.learn.behavior_policy_stop_training_iter if hasattr(
+        cfg.policy.learn, 'behavior_policy_stop_training_iter'
+    ) else np.inf
+    energy_guided_policy_begin_training_iter = cfg.policy.learn.energy_guided_policy_begin_training_iter if hasattr(
+        cfg.policy.learn, 'energy_guided_policy_begin_training_iter'
+    ) else 0
+    actions_generated = False
+
+    def generate_fake_actions():
+        allstates = dataset.states[:].cpu().numpy()
+        actions_sampled = []
+        for states in tqdm.tqdm(np.array_split(allstates, allstates.shape[0] // 4096 + 1)):
+            actions_sampled.append(
+                policy._model.sample(
+                    states,
+                    sample_per_state=cfg.policy.learn.M,
+                    diffusion_steps=cfg.policy.learn.diffusion_steps,
+                    guidance_scale=0.0,
+                )
+            )
+        actions = np.concatenate(actions_sampled)
+
+        allnextstates = dataset.next_states[:].cpu().numpy()
+        actions_next_states_sampled = []
+        for next_states in tqdm.tqdm(np.array_split(allnextstates, allnextstates.shape[0] // 4096 + 1)):
+            actions_next_states_sampled.append(
+                policy._model.sample(
+                    next_states,
+                    sample_per_state=cfg.policy.learn.M,
+                    diffusion_steps=cfg.policy.learn.diffusion_steps,
+                    guidance_scale=0.0,
+                )
+            )
+        actions_next_states = np.concatenate(actions_next_states_sampled)
+        return actions, actions_next_states
+
+    def _data_generator(ctx: "OfflineRLContext"):
+        nonlocal actions_generated
+
+        if ctx.train_iter >= energy_guided_policy_begin_training_iter:
+            if ctx.train_iter > behavior_policy_stop_training_iter:
+                # no need to generate fake actions if fake actions are already generated
+                if actions_generated:
+                    pass
+                else:
+                    actions, actions_next_states = generate_fake_actions()
+                    dataset.fake_actions = torch.Tensor(actions.astype(np.float32)).to(cfg.policy.model.device)
+                    dataset.fake_next_actions = torch.Tensor(actions_next_states.astype(np.float32)
+                                                             ).to(cfg.policy.model.device)
+                    actions_generated = True
+            else:
+                # generate fake actions
+                actions, actions_next_states = generate_fake_actions()
+                dataset.fake_actions = torch.Tensor(actions.astype(np.float32)).to(cfg.policy.model.device)
+                dataset.fake_next_actions = torch.Tensor(actions_next_states.astype(np.float32)
+                                                         ).to(cfg.policy.model.device)
+                actions_generated = True
+        else:
+            # no need to generate fake actions
+            pass
+
+    return _data_generator
+
+
+def qgpo_offline_data_fetcher(cfg: EasyDict, dataset: Dataset, collate_fn=lambda x: x) -> Callable:
+    """
+    Overview:
+        The outer function transforms a Pytorch `Dataset` to `DataLoader`. \
+        The return function is a generator which each time fetches a batch of data from the previous `DataLoader`.\
+        Please refer to the link https://pytorch.org/tutorials/beginner/basics/data_tutorial.html \
+        and https://pytorch.org/docs/stable/data.html for more details.
+    Arguments:
+        - cfg (:obj:`EasyDict`): Config which should contain the following keys: `cfg.policy.learn.batch_size`.
+        - dataset (:obj:`Dataset`): The dataset of type `torch.utils.data.Dataset` which stores the data.
+    """
+    # collate_fn is executed in policy now
+    dataloader = DataLoader(dataset, batch_size=cfg.policy.learn.batch_size, shuffle=True, collate_fn=collate_fn)
+    dataloader_q = DataLoader(dataset, batch_size=cfg.policy.learn.batch_size_q, shuffle=True, collate_fn=collate_fn)
+
+    behavior_policy_stop_training_iter = cfg.policy.learn.behavior_policy_stop_training_iter if hasattr(
+        cfg.policy.learn, 'behavior_policy_stop_training_iter'
+    ) else np.inf
+    energy_guided_policy_begin_training_iter = cfg.policy.learn.energy_guided_policy_begin_training_iter if hasattr(
+        cfg.policy.learn, 'energy_guided_policy_begin_training_iter'
+    ) else 0
+
+    def get_behavior_policy_training_data():
+        while True:
+            yield from dataloader
+
+    data = get_behavior_policy_training_data()
+
+    def get_q_training_data():
+        while True:
+            yield from dataloader_q
+
+    data_q = get_q_training_data()
+
+    def _fetch(ctx: "OfflineRLContext"):
+        """
+        Overview:
+            Every time this generator is iterated, the fetched data will be assigned to ctx.train_data. \
+            After the dataloader is empty, the attribute `ctx.train_epoch` will be incremented by 1.
+        Input of ctx:
+            - train_epoch (:obj:`int`): Number of `train_epoch`.
+        Output of ctx:
+            - train_data (:obj:`List[Tensor]`): The fetched data batch.
+        """
+
+        if ctx.train_iter >= energy_guided_policy_begin_training_iter:
+            ctx.train_data = next(data_q)
+        else:
+            ctx.train_data = next(data)
+
+        # TODO apply data update (e.g. priority) in offline setting when necessary
+        ctx.trained_env_step += len(ctx.train_data)
+
+    return _fetch

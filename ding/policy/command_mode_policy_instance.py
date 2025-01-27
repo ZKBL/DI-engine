@@ -24,8 +24,9 @@ from .ddpg import DDPGPolicy
 from .td3 import TD3Policy
 from .td3_vae import TD3VAEPolicy
 from .td3_bc import TD3BCPolicy
-from .sac import SACPolicy, SACDiscretePolicy
+from .sac import SACPolicy, DiscreteSACPolicy, SQILSACPolicy
 from .mbpolicy.mbsac import MBSACPolicy, STEVESACPolicy
+from .mbpolicy.dreamer import DREAMERPolicy
 from .qmix import QMIXPolicy
 from .wqmix import WQMIXPolicy
 from .collaq import CollaQPolicy
@@ -41,13 +42,18 @@ from .dqfd import DQFDPolicy
 from .r2d3 import R2D3Policy
 
 from .d4pg import D4PGPolicy
-from .cql import CQLPolicy, CQLDiscretePolicy
-from .decision_transformer import DTPolicy
+from .cql import CQLPolicy, DiscreteCQLPolicy
+from .iql import IQLPolicy
+from .dt import DTPolicy
 from .pdqn import PDQNPolicy
-from .sac import SQILSACPolicy
 from .madqn import MADQNPolicy
 from .bdq import BDQPolicy
+from .bcq import BCQPolicy
 from .edac import EDACPolicy
+from .prompt_pg import PromptPGPolicy
+from .plan_diffuser import PDPolicy
+from .happo import HAPPOPolicy
+from .prompt_awr import PromptAWRPolicy
 
 
 class EpsCommandModePolicy(CommandModePolicy):
@@ -183,6 +189,11 @@ class PPOCommandModePolicy(PPOPolicy, DummyCommandModePolicy):
     pass
 
 
+@POLICY_REGISTRY.register('happo_command')
+class HAPPOCommandModePolicy(HAPPOPolicy, DummyCommandModePolicy):
+    pass
+
+
 @POLICY_REGISTRY.register('ppo_stdim_command')
 class PPOSTDIMCommandModePolicy(PPOSTDIMPolicy, DummyCommandModePolicy):
     pass
@@ -302,13 +313,23 @@ class STEVESACCommandModePolicy(STEVESACPolicy, DummyCommandModePolicy):
     pass
 
 
+@POLICY_REGISTRY.register('dreamer_command')
+class DREAMERCommandModePolicy(DREAMERPolicy, DummyCommandModePolicy):
+    pass
+
+
 @POLICY_REGISTRY.register('cql_command')
 class CQLCommandModePolicy(CQLPolicy, DummyCommandModePolicy):
     pass
 
 
-@POLICY_REGISTRY.register('cql_discrete_command')
-class CQLDiscreteCommandModePolicy(CQLDiscretePolicy, EpsCommandModePolicy):
+@POLICY_REGISTRY.register('iql_command')
+class IQLCommandModePolicy(IQLPolicy, DummyCommandModePolicy):
+    pass
+
+
+@POLICY_REGISTRY.register('discrete_cql_command')
+class DiscreteCQLCommandModePolicy(DiscreteCQLPolicy, EpsCommandModePolicy):
     pass
 
 
@@ -367,8 +388,8 @@ class PDQNCommandModePolicy(PDQNPolicy, EpsCommandModePolicy):
     pass
 
 
-@POLICY_REGISTRY.register('sac_discrete_command')
-class SACDiscreteCommandModePolicy(SACDiscretePolicy, EpsCommandModePolicy):
+@POLICY_REGISTRY.register('discrete_sac_command')
+class DiscreteSACCommandModePolicy(DiscreteSACPolicy, EpsCommandModePolicy):
     pass
 
 
@@ -382,8 +403,18 @@ class IBCCommandModePolicy(IBCPolicy, DummyCommandModePolicy):
     pass
 
 
+@POLICY_REGISTRY.register('bcq_command')
+class BCQCommandModelPolicy(BCQPolicy, DummyCommandModePolicy):
+    pass
+
+
 @POLICY_REGISTRY.register('edac_command')
 class EDACCommandModelPolicy(EDACPolicy, DummyCommandModePolicy):
+    pass
+
+
+@POLICY_REGISTRY.register('pd_command')
+class PDCommandModelPolicy(PDPolicy, DummyCommandModePolicy):
     pass
 
 
@@ -426,3 +457,13 @@ class BCCommandModePolicy(BehaviourCloningPolicy, DummyCommandModePolicy):
 
     def _get_setting_eval(self, command_info: dict) -> dict:
         return {}
+
+
+@POLICY_REGISTRY.register('prompt_pg_command')
+class PromptPGCommandModePolicy(PromptPGPolicy, DummyCommandModePolicy):
+    pass
+
+
+@POLICY_REGISTRY.register('prompt_awr_command')
+class PromptAWRCommandModePolicy(PromptAWRPolicy, DummyCommandModePolicy):
+    pass
