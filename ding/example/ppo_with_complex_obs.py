@@ -6,7 +6,7 @@ import numpy as np
 import gym
 from gym import spaces
 from ditk import logging
-from ding.envs import DingEnvWrapper, EvalEpisodeReturnEnv, \
+from ding.envs import DingEnvWrapper, EvalEpisodeReturnWrapper, \
     BaseEnvManagerV2
 from ding.config import compile_config
 from ding.policy import PPOPolicy
@@ -30,7 +30,12 @@ my_env_ppo_config = dict(
         cuda=True,
         action_space='discrete',
         model=dict(
-            obs_shape=None,
+            obs_shape=dict(
+                key_0=dict(k1=(), k2=()),
+                key_1=(5, 10),
+                key_2=(10, 10, 3),
+                key_3=(2, ),
+            ),
             action_shape=2,
             action_space='discrete',
             critic_head_hidden_size=138,
@@ -107,7 +112,7 @@ class MyEnv(gym.Env):
 def ding_env_maker():
     return DingEnvWrapper(
         MyEnv(), cfg={'env_wrapper': [
-            lambda env: EvalEpisodeReturnEnv(env),
+            lambda env: EvalEpisodeReturnWrapper(env),
         ]}
     )
 

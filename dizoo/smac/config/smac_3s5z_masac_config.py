@@ -26,6 +26,7 @@ smac_3s5z_masac_default_config = dict(
     ),
     policy=dict(
         cuda=True,
+        multi_agent=True,
         random_collect_size=0,
         model=dict(
             agent_obs_shape=150,
@@ -41,7 +42,6 @@ smac_3s5z_masac_default_config = dict(
             learning_rate_q=5e-4,
             learning_rate_policy=5e-4,
             learning_rate_alpha=5e-5,
-            ignore_done=False,
             target_theta=0.005,
             discount_factor=0.99,
             alpha=0.2,
@@ -78,7 +78,7 @@ smac_3s5z_masac_default_create_config = dict(
         import_names=['dizoo.smac.envs.smac_env'],
     ),
     env_manager=dict(type='base'),
-    policy=dict(type='sac_discrete', ),
+    policy=dict(type='discrete_sac', ),
 )
 smac_3s5z_masac_default_create_config = EasyDict(smac_3s5z_masac_default_create_config)
 create_config = smac_3s5z_masac_default_create_config

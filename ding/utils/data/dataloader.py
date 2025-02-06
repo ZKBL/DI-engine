@@ -13,11 +13,12 @@ from .collate_fn import default_collate
 
 
 class AsyncDataLoader(IDataLoader):
-    r"""
+    """
     Overview:
         An asynchronous dataloader.
-    Interface:
-        __init__, __iter__, __next__, close
+    Interfaces:
+        ``__init__``, ``__iter__``, ``__next__``, ``_get_data``, ``_async_loop``, ``_worker_loop``, ``_cuda_loop``, \
+            ``_get_data``, ``close``
     """
 
     def __init__(
@@ -100,7 +101,7 @@ class AsyncDataLoader(IDataLoader):
             if self.batch_size != self.chunk_size:
                 # job_result {batch_id: result_list} is used to store processed result in temporal.
                 self.job_result = self.manager.dict()
-                self.job_result_lock = LockContext(type_=LockContextType.PROCESS_LOCK)
+                self.job_result_lock = LockContext(lock_type=LockContextType.PROCESS_LOCK)
             self.job_queue = self.mp_context.Queue(maxsize=queue_maxsize)
             self.worker = [
                 self.mp_context.Process(
@@ -186,6 +187,7 @@ class AsyncDataLoader(IDataLoader):
             - p (:obj:`tm.multiprocessing.connection`): Parent connection.
             - c (:obj:`tm.multiprocessing.connection`): Child connection.
         """
+        torch.set_num_threads(1)
         p.close()  # Close unused p, only use c
         while not self.end_flag:
             if self.num_workers > 1:
@@ -337,6 +339,10 @@ class AsyncDataLoader(IDataLoader):
             self.async_train_queue.join_thread()
 
     def __del__(self) -> None:
+        """
+        Overview:
+            Delete this dataloader.
+        """
         self.close()
 
     def close(self) -> None:

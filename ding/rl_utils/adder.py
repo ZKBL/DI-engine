@@ -4,7 +4,7 @@ import copy
 import torch
 
 from ding.utils import list_split, lists_to_dicts
-from .gae import gae, gae_data
+from ding.rl_utils.gae import gae, gae_data
 
 
 class Adder(object):
@@ -23,13 +23,23 @@ class Adder(object):
         Overview:
             Get GAE advantage for stacked transitions(T timestep, 1 batch). Call ``gae`` for calculation.
         Arguments:
-            - data (:obj:`list`): Transitions list, each element is a transition dict with at least ['value', 'reward']
+            - data (:obj:`list`): Transitions list, each element is a transition dict with at least \
+                ``['value', 'reward']``.
             - last_value (:obj:`torch.Tensor`): The last value(i.e.: the T+1 timestep)
-            - gamma (:obj:`float`): The future discount factor
-            - gae_lambda (:obj:`float`): GAE lambda parameter
+            - gamma (:obj:`float`): The future discount factor, should be in [0, 1], defaults to 0.99.
+            - gae_lambda (:obj:`float`): GAE lambda parameter, should be in [0, 1], defaults to 0.97, \
+            when lambda -> 0, it induces bias, but when lambda -> 1, it has high variance due to the sum of terms.
             - cuda (:obj:`bool`): Whether use cuda in GAE computation
         Returns:
             - data (:obj:`list`): transitions list like input one, but each element owns extra advantage key 'adv'
+        Examples:
+            >>> B, T = 2, 3 # batch_size, timestep
+            >>> data = [dict(value=torch.randn(B), reward=torch.randn(B)) for _ in range(T)]
+            >>> last_value = torch.randn(B)
+            >>> gamma = 0.99
+            >>> gae_lambda = 0.95
+            >>> cuda = False
+            >>> data = Adder.get_gae(data, last_value, gamma, gae_lambda, cuda)
         """
         value = torch.stack([d['value'] for d in data])
         next_value = torch.stack([d['value'] for d in data][1:] + [last_value])
@@ -54,18 +64,27 @@ class Adder(object):
         Overview:
             Like ``get_gae`` above to get GAE advantage for stacked transitions. However, this function is designed in
             case ``last_value`` is not passed. If transition is not done yet, it wouold assign last value in ``data``
-            as ``last_value``, discard the last element in ``data``(i.e. len(data) would decrease by 1), and then call
+            as ``last_value``, discard the last element in ``data`` (i.e. len(data) would decrease by 1), and then call
             ``get_gae``. Otherwise it would make ``last_value`` equal to 0.
         Arguments:
             - data (:obj:`deque`): Transitions list, each element is a transition dict with \
                 at least['value', 'reward']
             - done (:obj:`bool`): Whether the transition reaches the end of an episode(i.e. whether the env is done)
-            - gamma (:obj:`float`): The future discount factor
-            - gae_lambda (:obj:`float`): GAE lambda parameter
+            - gamma (:obj:`float`): The future discount factor, should be in [0, 1], defaults to 0.99.
+            - gae_lambda (:obj:`float`): GAE lambda parameter, should be in [0, 1], defaults to 0.97, \
+            when lambda -> 0, it induces bias, but when lambda -> 1, it has high variance due to the sum of terms.
             - cuda (:obj:`bool`): Whether use cuda in GAE computation
         Returns:
             - data (:obj:`List[Dict[str, Any]]`): transitions list like input one, but each element owns \
                 extra advantage key 'adv'
+        Examples:
+            >>> B, T = 2, 3 # batch_size, timestep
+            >>> data = [dict(value=torch.randn(B), reward=torch.randn(B)) for _ in range(T)]
+            >>> done = False
+            >>> gamma = 0.99
+            >>> gae_lambda = 0.95
+            >>> cuda = False
+            >>> data = Adder.get_gae_with_default_last_value(data, done, gamma, gae_lambda, cuda)
         """
         if done:
             last_value = torch.zeros_like(data[-1]['value'])
@@ -85,17 +104,25 @@ class Adder(object):
     ) -> deque:
         """
         Overview:
-            Process raw traj data by updating keys ['next_obs', 'reward', 'done'] in data's dict element.
+            Process raw traj data by updating keys ``['next_obs', 'reward', 'done']`` in data's dict element.
         Arguments:
             - data (:obj:`deque`): Transitions list, each element is a transition dict
             - nstep (:obj:`int`): Number of steps. If equals to 1, return ``data`` directly; \
                 Otherwise update with nstep value.
         Returns:
             - data (:obj:`deque`): Transitions list like input one, but each element updated with nstep value.
+        Examples:
+            >>> data = [dict(
+            >>>     obs=torch.randn(B),
+            >>>     reward=torch.randn(1),
+            >>>     next_obs=torch.randn(B),
+            >>>     done=False) for _ in range(T)]
+            >>> nstep = 2
+            >>> data = Adder.get_nstep_return_data(data, nstep)
         """
         if nstep == 1:
             return data
-        fake_reward = torch.zeros(1)
+        fake_reward = torch.zeros_like(data[0]['reward'])
         next_obs_flag = 'next_obs' in data[0]
         for i in range(len(data) - nstep):
             # update keys ['next_obs', 'reward', 'done'] with their n-step value
@@ -104,7 +131,10 @@ class Adder(object):
             if cum_reward:
                 data[i]['reward'] = sum([data[i + j]['reward'] * (gamma ** j) for j in range(nstep)])
             else:
-                data[i]['reward'] = torch.cat([data[i + j]['reward'] for j in range(nstep)])
+                # data[i]['reward'].shape = (1) or (agent_num, 1)
+                # single agent env: shape (1) -> (n_step)
+                # multi-agent env: shape (agent_num, 1) -> (agent_num, n_step)
+                data[i]['reward'] = torch.cat([data[i + j]['reward'] for j in range(nstep)], dim=-1)
             data[i]['done'] = data[i + nstep - 1]['done']
             if correct_terminate_gamma:
                 data[i]['value_gamma'] = gamma ** nstep
@@ -116,7 +146,8 @@ class Adder(object):
             else:
                 data[i]['reward'] = torch.cat(
                     [data[i + j]['reward']
-                     for j in range(len(data) - i)] + [fake_reward for _ in range(nstep - (len(data) - i))]
+                     for j in range(len(data) - i)] + [fake_reward for _ in range(nstep - (len(data) - i))],
+                    dim=-1
                 )
             data[i]['done'] = data[-1]['done']
             if correct_terminate_gamma:
@@ -133,7 +164,7 @@ class Adder(object):
     ) -> List[Dict[str, Any]]:
         """
         Overview:
-            Process raw traj data by updating keys ['next_obs', 'reward', 'done'] in data's dict element.
+            Process raw traj data by updating keys ``['next_obs', 'reward', 'done']`` in data's dict element.
             If ``unroll_len`` equals to 1, which means no process is needed, can directly return ``data``.
             Otherwise, ``data`` will be splitted according to ``unroll_len``, process residual part according to
             ``last_fn_type`` and call ``lists_to_dicts`` to form sampled training data.

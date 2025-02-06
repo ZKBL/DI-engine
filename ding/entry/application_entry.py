@@ -26,9 +26,9 @@ def eval(
         load_path: Optional[str] = None,
         replay_path: Optional[str] = None,
 ) -> float:
-    r"""
+    """
     Overview:
-        Pure evaluation entry.
+        Pure policy evaluation entry. Evaluate mean episode return and save replay videos.
     Arguments:
         - input_cfg (:obj:`Union[str, Tuple[dict, dict]]`): Config in dict type. \
             ``str`` type means config file path. \
@@ -72,8 +72,7 @@ def eval(
 
     # Evaluate
     _, episode_info = evaluator.eval()
-    reward = [e['eval_episode_return'] for e in episode_info]
-    episode_return = np.mean(to_ndarray(reward))
+    episode_return = np.mean(episode_info['eval_episode_return'])
     print('Eval is over! The performance of your RL policy is {}'.format(episode_return))
     return episode_return
 

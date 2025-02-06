@@ -1,15 +1,19 @@
 import torch
 import torch.nn as nn
-from typing import Tuple
+from typing import Tuple, List
 from ding.hpc_rl import hpc_wrapper
 
 
-def shape_fn_scatter_connection(args, kwargs) -> list:
-    r"""
+def shape_fn_scatter_connection(args, kwargs) -> List[int]:
+    """
     Overview:
-        Return shape of scatter_connection for hpc
+        Return the shape of scatter_connection for HPC.
+    Arguments:
+        - args (:obj:`Tuple`): The arguments passed to the scatter_connection function.
+        - kwargs (:obj:`Dict`): The keyword arguments passed to the scatter_connection function.
     Returns:
-        - shape (:obj:`list`): List like [B, M, N, H, W, scatter_type]
+        - shape (:obj:`List[int]`): A list representing the shape of scatter_connection, \
+            in the form of [B, M, N, H, W, scatter_type].
     """
     if len(args) <= 1:
         tmp = list(kwargs['x'].shape)
@@ -24,20 +28,22 @@ def shape_fn_scatter_connection(args, kwargs) -> list:
 
 
 class ScatterConnection(nn.Module):
-    r"""
+    """
     Overview:
-        Scatter feature to its corresponding location
-        In AlphaStar, each entity is embedded into a tensor,
+        Scatter feature to its corresponding location. In AlphaStar, each entity is embedded into a tensor,
         and these tensors are scattered into a feature map with map size.
+    Interfaces:
+        ``__init__``, ``forward``, ``xy_forward``
     """
 
     def __init__(self, scatter_type: str) -> None:
-        r"""
+        """
         Overview:
-            Init class
+            Initialize the ScatterConnection object.
         Arguments:
-            - scatter_type (:obj:`str`): Supports ['add', 'cover']. If two entities have the same location, \
-                scatter_type decides the first one should be covered or added to second one
+            - scatter_type (:obj:`str`): The scatter type, which decides the behavior when two entities have the \
+                same location. It can be either 'add' or 'cover'. If 'add', the first one will be added to the \
+                second one. If 'cover', the first one will be covered by the second one.
         """
         super(ScatterConnection, self).__init__()
         self.scatter_type = scatter_type
@@ -53,41 +59,63 @@ class ScatterConnection(nn.Module):
     def forward(self, x: torch.Tensor, spatial_size: Tuple[int, int], location: torch.Tensor) -> torch.Tensor:
         """
         Overview:
-            scatter x into a spatial feature map
+            Scatter input tensor 'x' into a spatial feature map.
         Arguments:
-            - x (:obj:`tensor`): input tensor :math: `(B, M, N)` where `M` means the number of entity, `N` means \
-                the dimension of entity attributes
-            - spatial_size (:obj:`tuple`): Tuple[H, W], the size of spatial feature x will be scattered into
-            - location (:obj:`tensor`): :math: `(B, M, 2)` torch.LongTensor, each location should be (y, x)
+            - x (:obj:`torch.Tensor`): The input tensor of shape `(B, M, N)`, where `B` is the batch size, `M` \
+                is the number of entities, and `N` is the dimension of entity attributes.
+            - spatial_size (:obj:`Tuple[int, int]`): The size `(H, W)` of the spatial feature map into which 'x' \
+                will be scattered, where `H` is the height and `W` is the width.
+            - location (:obj:`torch.Tensor`): The tensor of locations of shape `(B, M, 2)`. \
+                Each location should be (y, x).
         Returns:
-            - output (:obj:`tensor`): :math: `(B, N, H, W)` where `H` and `W` are spatial_size, return the\
-                scattered feature map
-        Shapes:
-            - Input: :math: `(B, M, N)` where `M` means the number of entity, `N` means \
-                the dimension of entity attributes
-            - Size: Tuple type :math: `[H, W]`
-            - Location: :math: `(B, M, 2)` torch.LongTensor, each location should be (y, x)
-            - Output: :math: `(B, N, H, W)` where `H` and `W` are spatial_size
-
-        .. note::
-
-            When there are some overlapping in locations, ``cover`` mode will result in the loss of information, we
-            use the addition as temporal substitute.
+            - output (:obj:`torch.Tensor`): The scattered feature map of shape `(B, N, H, W)`.
+        Note:
+            When there are some overlapping in locations, 'cover' mode will result in the loss of information.
+            'add' mode is used as a temporary substitute.
         """
         device = x.device
         B, M, N = x.shape
+        x = x.permute(0, 2, 1)
         H, W = spatial_size
-        index = location.view(-1, 2)
-        bias = torch.arange(B).mul_(H * W).unsqueeze(1).repeat(1, M).view(-1).to(device)
-        index = index[:, 0] * W + index[:, 1]
-        index += bias
-        index = index.repeat(N, 1)
-        x = x.view(-1, N).permute(1, 0)
-        output = torch.zeros(N, B * H * W, device=device)
+        index = location[:, :, 1] + location[:, :, 0] * W
+        index = index.unsqueeze(dim=1).repeat(1, N, 1)
+        output = torch.zeros(size=(B, N, H, W), device=device).view(B, N, H * W)
         if self.scatter_type == 'cover':
-            output.scatter_(dim=1, index=index, src=x)
+            output.scatter_(dim=2, index=index, src=x)
         elif self.scatter_type == 'add':
-            output.scatter_add_(dim=1, index=index, src=x)
-        output = output.reshape(N, B, H, W)
-        output = output.permute(1, 0, 2, 3).contiguous()
+            output.scatter_add_(dim=2, index=index, src=x)
+        output = output.view(B, N, H, W)
+        return output
+
+    def xy_forward(
+            self, x: torch.Tensor, spatial_size: Tuple[int, int], coord_x: torch.Tensor, coord_y
+    ) -> torch.Tensor:
+        """
+        Overview:
+            Scatter input tensor 'x' into a spatial feature map using separate x and y coordinates.
+        Arguments:
+            - x (:obj:`torch.Tensor`): The input tensor of shape `(B, M, N)`, where `B` is the batch size, `M` \
+                is the number of entities, and `N` is the dimension of entity attributes.
+            - spatial_size (:obj:`Tuple[int, int]`): The size `(H, W)` of the spatial feature map into which 'x' \
+                will be scattered, where `H` is the height and `W` is the width.
+            - coord_x (:obj:`torch.Tensor`): The x-coordinates tensor of shape `(B, M)`.
+            - coord_y (:obj:`torch.Tensor`): The y-coordinates tensor of shape `(B, M)`.
+        Returns:
+            - output (:obj:`torch.Tensor`): The scattered feature map of shape `(B, N, H, W)`.
+        Note:
+            When there are some overlapping in locations, 'cover' mode will result in the loss of information.
+            'add' mode is used as a temporary substitute.
+        """
+        device = x.device
+        B, M, N = x.shape
+        x = x.permute(0, 2, 1)
+        H, W = spatial_size
+        index = (coord_x * W + coord_y).long()
+        index = index.unsqueeze(dim=1).repeat(1, N, 1)
+        output = torch.zeros(size=(B, N, H, W), device=device).view(B, N, H * W)
+        if self.scatter_type == 'cover':
+            output.scatter_(dim=2, index=index, src=x)
+        elif self.scatter_type == 'add':
+            output.scatter_add_(dim=2, index=index, src=x)
+        output = output.view(B, N, H, W)
         return output

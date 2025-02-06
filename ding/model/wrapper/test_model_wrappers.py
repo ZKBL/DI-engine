@@ -9,7 +9,8 @@ from ditk import logging
 
 from ding.torch_utils import get_lstm
 from ding.torch_utils.network.gtrxl import GTrXL
-from ding.model import model_wrap, register_wrapper, IModelWrapper, BaseModelWrapper
+from ding.model import model_wrap, register_wrapper, IModelWrapper
+from ding.model.wrapper.model_wrappers import BaseModelWrapper
 
 
 class TempMLP(torch.nn.Module):
@@ -38,7 +39,7 @@ class ActorMLP(torch.nn.Module):
         self.bn1 = nn.BatchNorm1d(4)
         self.fc2 = nn.Linear(4, 6)
         self.act = nn.ReLU()
-        self.out = nn.Softmax()
+        self.out = nn.Softmax(dim=-1)
 
     def forward(self, inputs, tmp=0):
         x = self.fc1(inputs['obs'])
@@ -61,7 +62,7 @@ class HybridActorMLP(torch.nn.Module):
         self.bn1 = nn.BatchNorm1d(4)
         self.fc2 = nn.Linear(4, 6)
         self.act = nn.ReLU()
-        self.out = nn.Softmax()
+        self.out = nn.Softmax(dim=-1)
 
         self.fc2_cont = nn.Linear(4, 6)
         self.act_cont = nn.ReLU()
@@ -93,7 +94,7 @@ class HybridReparamActorMLP(torch.nn.Module):
         self.bn1 = nn.BatchNorm1d(4)
         self.fc2 = nn.Linear(4, 6)
         self.act = nn.ReLU()
-        self.out = nn.Softmax()
+        self.out = nn.Softmax(dim=-1)
 
         self.fc2_cont_mu = nn.Linear(4, 6)
         self.act_cont_mu = nn.ReLU()
@@ -131,7 +132,6 @@ class ReparamActorMLP(torch.nn.Module):
         self.bn1 = nn.BatchNorm1d(4)
         self.fc2 = nn.Linear(4, 6)
         self.act = nn.ReLU()
-        self.out = nn.Softmax()
 
         self.fc2_cont_mu = nn.Linear(4, 6)
         self.fc2_cont_sigma = nn.Linear(4, 6)
@@ -193,6 +193,20 @@ class TempLSTM(torch.nn.Module):
     def forward(self, data):
         output, next_state = self.model(data['f'], data['prev_state'], list_next_state=True)
         return {'output': output, 'next_state': next_state}
+
+
+class TempLSTMActor(torch.nn.Module):
+
+    def __init__(self):
+        super(TempLSTMActor, self).__init__()
+        self.model = get_lstm(lstm_type='pytorch', input_size=36, hidden_size=32, num_layers=2, norm_type=None)
+
+    def forward(self, data, tmp=0):
+        output, next_state = self.model(data['f'], data['prev_state'], list_next_state=True)
+        ret = {'logit': output, 'tmp': tmp, 'action': output + torch.rand_like(output), 'next_state': next_state}
+        if 'mask' in data:
+            ret['action_mask'] = data['mask']
+        return ret
 
 
 @pytest.fixture(scope='function')
@@ -514,12 +528,23 @@ class TestModelWrappers:
         model.reset()
         assert model.obs_memory is None
 
+    def test_transformer_segment_wrapper(self):
+        seq_len, bs, obs_shape = 12, 8, 32
+        layer_num, memory_len, emb_dim = 3, 4, 4
+        model = GTrXL(input_dim=obs_shape, embedding_dim=emb_dim, memory_len=memory_len, layer_num=layer_num)
+        model = model_wrap(model, wrapper_name='transformer_segment', seq_len=seq_len)
+        inputs1 = torch.randn((seq_len, bs, obs_shape))
+        out = model.forward(inputs1)
+        info = model.info('info')
+        info = model.info('x')
+
     def test_transformer_memory_wrapper(self):
         seq_len, bs, obs_shape = 12, 8, 32
         layer_num, memory_len, emb_dim = 3, 4, 4
         model = GTrXL(input_dim=obs_shape, embedding_dim=emb_dim, memory_len=memory_len, layer_num=layer_num)
         model1 = model_wrap(model, wrapper_name='transformer_memory', batch_size=bs)
         model2 = model_wrap(model, wrapper_name='transformer_memory', batch_size=bs)
+        model1.show_memory_occupancy()
         inputs1 = torch.randn((seq_len, bs, obs_shape))
         out = model1.forward(inputs1)
         new_memory1 = model1.memory
@@ -549,3 +574,46 @@ class TestModelWrappers:
         assert sum(new_memory2[:, -16:].flatten()) != 0
         assert sum(new_memory2[:, :-16].flatten()) == 0
         assert torch.all(torch.eq(new_memory1[:, -8:], new_memory2[:, -16:-8]))
+
+    def test_combination_argmax_sample_wrapper(self):
+        model = model_wrap(ActorMLP(), wrapper_name='combination_argmax_sample')
+        data = {'obs': torch.randn(4, 3)}
+        shot_number = 2
+        output = model.forward(shot_number=shot_number, inputs=data)
+        assert output['action'].shape == (4, shot_number)
+        assert (output['action'] >= 0).all() and (output['action'] < 64).all()
+
+    def test_combination_multinomial_sample_wrapper(self):
+        model = model_wrap(ActorMLP(), wrapper_name='combination_multinomial_sample')
+        data = {'obs': torch.randn(4, 3)}
+        shot_number = 2
+        output = model.forward(shot_number=shot_number, inputs=data)
+        assert output['action'].shape == (4, shot_number)
+        assert (output['action'] >= 0).all() and (output['action'] < 64).all()
+
+    def test_hidden_state_and_epsilon_greedy_wrapper(self):
+        model = model_wrap(TempLSTMActor(), wrapper_name='hidden_state', state_num=4, save_prev_state=True)
+        model = model_wrap(model, wrapper_name='eps_greedy_sample')
+        model.reset()
+        # Check that reset properly initializes all states to None
+        assert all([isinstance(s, type(None)) for s in model._state.values()])
+
+        data = {'f': torch.randn(2, 4, 36)}
+        output = model.forward(data, eps=0.8)
+        assert output['tmp'] == 0
+        assert 'logit' in output
+        assert output['logit'].shape == (2, 4, 32)
+        assert 'action' in output
+        assert output['action'].shape == (2, 4)
+        assert 'prev_state' in output
+        assert len(output['prev_state']) == 4
+        assert output['prev_state'][0]['h'].shape == (2, 1, 32)
+        assert output['prev_state'][0]['c'].shape == (2, 1, 32)
+
+        assert all([isinstance(s, dict) for s in model._state.values()])
+        # Check that reset with specific data_id works
+        model.reset(data_id=[0, 2])
+        assert isinstance(model._state[0], type(None))
+        assert isinstance(model._state[2], type(None))
+        assert isinstance(model._state[1], dict)
+        assert isinstance(model._state[3], dict)

@@ -1,4 +1,5 @@
 import pytest
+import os
 import torch
 from easydict import EasyDict
 from ding.world_model.base_world_model import DreamWorldModel, DynaWorldModel
@@ -10,8 +11,8 @@ class TestDynaWorldModel:
 
     @pytest.mark.parametrize('buffer_type', [NaiveReplayBuffer, EpisodeReplayBuffer])
     def test_fill_img_buffer(self, buffer_type):
-        env_buffer = buffer_type(buffer_type.default_config(), None, 'exp_name', 'env_buffer_for_test')
-        img_buffer = buffer_type(buffer_type.default_config(), None, 'exp_name', 'img_buffer_for_test')
+        env_buffer = buffer_type(buffer_type.default_config(), None, 'dyna_exp_name', 'env_buffer_for_test')
+        img_buffer = buffer_type(buffer_type.default_config(), None, 'dyna_exp_name', 'img_buffer_for_test')
         fake_config = EasyDict(
             train_freq=250,  # w.r.t environment step
             eval_freq=250,  # w.r.t environment step
@@ -51,11 +52,11 @@ class TestDynaWorldModel:
                 return (torch.zeros(B), torch.rand(B, O), obs.sum(-1) > 0)
 
         from ding.policy import SACPolicy
-        from ding.model import QAC
+        from ding.model import ContinuousQAC
 
         policy_config = SACPolicy.default_config()
         policy_config.model.update(dict(obs_shape=2, action_shape=2))
-        model = QAC(**policy_config.model)
+        model = ContinuousQAC(**policy_config.model)
         policy = SACPolicy(policy_config, model=model).collect_mode
 
         fake_model = FakeModel(fake_config, None, None)
@@ -74,6 +75,7 @@ class TestDynaWorldModel:
         )
 
         super(FakeModel, fake_model).fill_img_buffer(policy, env_buffer, img_buffer, 0, 0)
+        os.popen("rm -rf dyna_exp_name")
 
 
 @pytest.mark.unittest
